@@ -8,6 +8,9 @@ DEFAULT_TIMEZONE = "America/Vancouver"
 DEFAULT_TEAM_ID = "141"
 MLB_BASE = "https://statsapi.mlb.com/api/v1"
 MLB_LIVE = "https://statsapi.mlb.com/api/v1.1"
+MLB_LOGO_BASE = "https://www.mlbstatic.com/team-logos/team-cap-on-dark"
+ESPN_LOGO_BASE = "https://a.espncdn.com/i/teamlogos/mlb/500"
+LOGO_SIZE = 14
 
 # Primary color, background accent, logo letter
 TEAM_STYLES = {
@@ -62,37 +65,42 @@ def main(config):
     status = game.get("status", {}).get("abstractGameState", "")
     away = game.get("teams", {}).get("away", {})
     home = game.get("teams", {}).get("home", {})
-    away_abbr = _team_abbr(away)
-    home_abbr = _team_abbr(home)
+    away_info = _team_info(away)
+    home_info = _team_info(home)
 
     if status == "Live" or status == "Final":
         live = _fetch_live(game.get("gamePk"))
         if live:
             return _render_scorebug(live, status == "Final")
 
-        away_score = away.get("score", 0) or 0
-        home_score = home.get("score", 0) or 0
         return _render_simple_score(
-            away_abbr,
-            home_abbr,
-            away_score,
-            home_score,
+            away_info,
+            home_info,
+            away.get("score", 0) or 0,
+            home.get("score", 0) or 0,
             "FINAL" if status == "Final" else "LIVE",
         )
 
     return _render_upcoming(
-        away_abbr,
-        home_abbr,
+        away_info,
+        home_info,
         game.get("gameDate", ""),
         timezone,
     )
 
-def _team_abbr(team_block):
+def _team_info(team_block):
     team = team_block.get("team", {})
-    abbr = team.get("abbreviation")
-    if abbr:
-        return abbr
-    return "???"
+    abbr = team.get("abbreviation") or "???"
+    team_id = team.get("id")
+    file_code = team.get("fileCode") or team.get("teamCode") or ""
+    return {
+        "abbr": abbr,
+        "id": team_id,
+        "file_code": file_code,
+    }
+
+def _team_abbr(team_info):
+    return team_info.get("abbr", "???")
 
 def _fetch_schedule(team_id, timezone):
     now = time.now().in_location(timezone)
@@ -155,14 +163,24 @@ def _fetch_live(game_pk):
     if not linescore:
         return None
 
-    away = game_data.get("teams", {}).get("away", {}).get("abbreviation", "???")
-    home = game_data.get("teams", {}).get("home", {}).get("abbreviation", "???")
+    away_team = game_data.get("teams", {}).get("away", {})
+    home_team = game_data.get("teams", {}).get("home", {})
     teams = linescore.get("teams", {})
     offense = linescore.get("offense", {})
 
     return {
-        "away": away,
-        "home": home,
+        "away": away_team.get("abbreviation", "???"),
+        "home": home_team.get("abbreviation", "???"),
+        "away_info": {
+            "abbr": away_team.get("abbreviation", "???"),
+            "id": away_team.get("id"),
+            "file_code": away_team.get("fileCode") or away_team.get("teamCode") or "",
+        },
+        "home_info": {
+            "abbr": home_team.get("abbreviation", "???"),
+            "id": home_team.get("id"),
+            "file_code": home_team.get("fileCode") or home_team.get("teamCode") or "",
+        },
         "away_score": teams.get("away", {}).get("runs", 0) or 0,
         "home_score": teams.get("home", {}).get("runs", 0) or 0,
         "inning": linescore.get("currentInning", 0) or 0,
@@ -181,12 +199,47 @@ def _team_style(abbr):
         return style
     return ("#334155", "#111827", abbr[:1] if abbr else "?")
 
+def _fetch_logo(team_info):
+    team_id = team_info.get("id")
+    file_code = team_info.get("file_code")
+
+    if team_id:
+        url = MLB_LOGO_BASE + "/" + str(team_id) + ".svg"
+        response = http.get(url, ttl_seconds = 86400)
+        if response.status_code == 200:
+            body = response.body()
+            if body:
+                return body
+
+    if file_code:
+        url = ESPN_LOGO_BASE + "/" + str(file_code).lower() + ".png"
+        response = http.get(url, ttl_seconds = 86400)
+        if response.status_code == 200:
+            body = response.body()
+            if body:
+                return body
+
+    return None
+
+def _format_score(score):
+    if score == None:
+        return "0"
+    if type(score) == "int":
+        return str(score)
+    if type(score) == "float":
+        return str(int(score))
+
+    text = str(score)
+    if "." in text:
+        return text.split(".")[0]
+    return text
+
 def _render_scorebug(data, is_final):
-    away_style = _team_style(data["away"])
-    home_style = _team_style(data["home"])
+    away_info = data.get("away_info") or {"abbr": data["away"], "id": None, "file_code": ""}
+    home_info = data.get("home_info") or {"abbr": data["home"], "id": None, "file_code": ""}
 
     state_label = "FINAL" if is_final else _format_count(data["balls"], data["strikes"])
-    inning_label = "F" if is_final else str(data["inning"])
+    inning_label = "F" if is_final else _format_score(data["inning"])
     half_symbol = "" if is_final else _half_symbol(data["half"])
     outs = 0 if is_final else data["outs"]
 
@@ -194,8 +247,8 @@ def _render_scorebug(data, is_final):
         child = render.Row(
             expanded = True,
             children = [
-                _render_logo_column(away_style, home_style),
-                _render_score_column(data["away"], data["home"], data["away_score"], data["home_score"]),
+                _render_logo_column(away_info, home_info),
+                _render_score_column(away_info, home_info, data["away_score"], data["home_score"]),
                 _render_state_column(
                     data["first"],
                     data["second"],
@@ -210,16 +263,13 @@ def _render_scorebug(data, is_final):
         ),
     )
 
-def _render_simple_score(away, home, away_score, home_score, label):
-    away_style = _team_style(away)
-    home_style = _team_style(home)
-
+def _render_simple_score(away_info, home_info, away_score, home_score, label):
     return render.Root(
         child = render.Row(
             expanded = True,
             children = [
-                _render_logo_column(away_style, home_style),
-                _render_score_column(away, home, away_score, home_score),
+                _render_logo_column(away_info, home_info),
+                _render_score_column(away_info, home_info, away_score, home_score),
                 render.Box(
                     width = 26,
                     height = 32,
@@ -237,16 +287,14 @@ def _render_simple_score(away, home, away_score, home_score, label):
         ),
     )
 
-def _render_upcoming(away, home, game_date, timezone):
-    away_style = _team_style(away)
-    home_style = _team_style(home)
+def _render_upcoming(away_info, home_info, game_date, timezone):
     when = _format_game_time(game_date, timezone)
 
     return render.Root(
         child = render.Row(
             expanded = True,
             children = [
-                _render_logo_column(away_style, home_style),
+                _render_logo_column(away_info, home_info),
                 render.Box(
                     width = 38,
                     height = 32,
@@ -256,7 +304,11 @@ def _render_upcoming(away, home, game_date, timezone):
                         main_align = "center",
                         cross_align = "center",
                         children = [
-                            render.Text(away + " @ " + home, color = "#FFFFFF", font = "5x8"),
+                            render.Text(
+                                _team_abbr(away_info) + " @ " + _team_abbr(home_info),
+                                color = "#FFFFFF",
+                                font = "5x8",
+                            ),
                             render.Text("NEXT", color = "#94A3B8", font = "tom-thumb"),
                             render.Text(when, color = "#E2E8F0", font = "tom-thumb"),
                         ],
@@ -266,45 +318,53 @@ def _render_upcoming(away, home, game_date, timezone):
         ),
     )
 
-def _render_logo_column(away_style, home_style):
+def _render_logo_column(away_info, home_info):
     return render.Box(
         width = 16,
         height = 32,
         child = render.Column(
             children = [
-                _render_logo_cell(away_style),
-                _render_logo_cell(home_style),
+                _render_logo_cell(away_info),
+                _render_logo_cell(home_info),
             ],
         ),
     )
 
-def _render_logo_cell(style):
-    primary, accent, letter = style
+def _render_logo_cell(team_info):
+    abbr = _team_abbr(team_info)
+    _, accent, letter = _team_style(abbr)
+    logo = _fetch_logo(team_info)
+
+    if logo:
+        logo_child = render.Image(src = logo, width = LOGO_SIZE, height = LOGO_SIZE)
+    else:
+        logo_child = render.Text(letter, color = "#FFFFFF", font = "5x8")
+
     return render.Box(
         width = 16,
         height = 16,
         color = accent,
         child = render.Box(
-            color = primary,
-            width = 14,
-            height = 14,
-            child = render.Text(
-                letter,
-                color = "#FFFFFF",
-                font = "6x13",
+            color = "#000000",
+            width = 16,
+            height = 16,
+            child = render.Box(
+                width = LOGO_SIZE,
+                height = LOGO_SIZE,
+                child = logo_child,
             ),
         ),
     )
 
-def _render_score_column(away, home, away_score, home_score):
+def _render_score_column(away_info, home_info, away_score, home_score):
     return render.Box(
         width = 22,
         height = 32,
         color = "#000000",
         child = render.Column(
             children = [
-                _render_score_row(away, away_score),
-                _render_score_row(home, home_score),
+                _render_score_row(_team_abbr(away_info), away_score),
+                _render_score_row(_team_abbr(home_info), home_score),
             ],
         ),
     )
@@ -315,11 +375,12 @@ def _render_score_row(abbr, score):
         height = 16,
         color = "#000000",
         child = render.Column(
+            expanded = True,
             main_align = "center",
             cross_align = "center",
             children = [
                 render.Text(abbr, color = "#FFFFFF", font = "tom-thumb"),
-                render.Text(str(score), color = "#FFFFFF", font = "6x13"),
+                render.Text(_format_score(score), color = "#FFFFFF", font = "5x8"),
             ],
         ),
     )
