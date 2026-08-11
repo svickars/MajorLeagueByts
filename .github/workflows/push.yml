@@ -1,0 +1,58 @@
+name: Push Major League Byts to Tidbyt
+
+on:
+  schedule:
+    # Baseline check every 5 minutes (GitHub Actions minimum interval).
+    # The schedule script skips idle runs; live games enter a 90s push loop.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_fast_loop:
+        description: "Force 90s update loop (testing)"
+        required: false
+        default: "false"
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    env:
+      TIDBYT_API_TOKEN: ${{ secrets.TIDBYT_API_TOKEN }}
+      TIDBYT_DEVICE_ID: ${{ vars.TIDBYT_DEVICE_ID }}
+      TIDBYT_INSTALLATION_ID: ${{ vars.TIDBYT_INSTALLATION_ID || 'MajorLeagueByts' }}
+      TEAM_ID: ${{ vars.TEAM_ID || '141' }}
+      TIMEZONE: ${{ vars.TIMEZONE || 'America/Vancouver' }}
+      PUSH_INTERVAL_SEC: ${{ vars.PUSH_INTERVAL_SEC || '90' }}
+      MAX_FAST_MINUTES: ${{ vars.MAX_FAST_MINUTES || '360' }}
+      FORCE_FAST_LOOP: ${{ github.event.inputs.force_fast_loop || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate configuration
+        run: |
+          if [[ -z "${TIDBYT_API_TOKEN}" ]]; then
+            echo "Missing secret: TIDBYT_API_TOKEN" >&2
+            exit 1
+          fi
+          if [[ -z "${TIDBYT_DEVICE_ID}" ]]; then
+            echo "Missing variable: TIDBYT_DEVICE_ID" >&2
+            exit 1
+          fi
+
+      - name: Check schedule
+        id: schedule
+        run: |
+          chmod +x scripts/check-schedule.sh
+          ./scripts/check-schedule.sh
+
+      - name: Install Pixlet
+        if: steps.schedule.outputs.push_mode != 'skip' || env.FORCE_FAST_LOOP == 'true'
+        run: |
+          curl -LO https://github.com/tidbyt/pixlet/releases/download/v0.34.0/pixlet_0.34.0_linux_amd64.tar.gz
+          tar -xvf pixlet_0.34.0_linux_amd64.tar.gz
+          sudo mv pixlet /usr/local/bin/pixlet
+
+      - name: Render and push
+        if: steps.schedule.outputs.push_mode != 'skip' || env.FORCE_FAST_LOOP == 'true'
+        run: |
+          chmod +x push.sh
+          ./push.sh
