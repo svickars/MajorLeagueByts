@@ -1,0 +1,8 @@
+---
+id: major-league-byts
+name: Major League Byts
+summary: Live MLB scorebug
+desc: Live MLB scoreboard for your favourite team — scores, inning, count, bases, and outs.
+author: svickars
+file: major_league_byts.star
+package: major-league-byts
